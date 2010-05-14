@@ -1872,7 +1872,6 @@ void Locker::kick_cap_releases(MDRequest *mdr)
   }
 }
 
-#if 0
 static __u64 calc_bounding(__u64 t)
 {
   t |= t >> 1;
@@ -1883,7 +1882,6 @@ static __u64 calc_bounding(__u64 t)
   t |= t >> 32;
   return t + 1;
 }
-#endif
 
 /*
  * update inode based on cap flush|flushsnap|wanted.
@@ -1898,16 +1896,16 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
 	   << " issued " << ccap_string(cap->issued())
 	   << " wanted " << ccap_string(cap->wanted())
 	   << " on " << *in << dendl;
-  dout(10) << "folder_quota:" << g_conf.folder_quota << dendl;
   assert(in->is_auth());
   client_t client = m->get_source().num();
   inode_t *latest = in->get_projected_inode();
 
   // increase or zero max_size?
-  //__u64 size = m->get_size();
+  __u64 size = m->get_size();
   bool change_max = false;
   uint64_t old_max = latest->client_ranges.count(client) ? latest->client_ranges[client].last : 0;
   uint64_t new_max = old_max;
+  bool enable_folder_quota = g_conf.folder_quota;
   uint64_t quota = 0;
   uint64_t rbytes = 0;
   
@@ -1917,8 +1915,19 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
 	dout(10) << "client requests file_max " << m->get_max_size()
 		 << " > max " << old_max << dendl;
 	change_max = true;
-        //new_max = ROUND_UP_TO((m->get_max_size()+1) << 1, latest->get_layout_size_increment());
-        new_max = ROUND_UP_TO(m->get_max_size(), latest->get_layout_size_increment());
+        if (enable_folder_quota)
+          new_max = ROUND_UP_TO((m->get_max_size()+1) << 1, latest->get_layout_size_increment());
+        else
+          new_max = ROUND_UP_TO(m->get_max_size(), latest->get_layout_size_increment());
+      } else {
+        if (!enable_folder_quota) {
+          //new_max = ROUND_UP_TO((size+1)<<1, latest->get_layout_size_increment());
+          new_max = calc_bounding(size * 2);
+          if (new_max > old_max)
+            change_max = true;
+          else
+            new_max = old_max;
+        }
       }
     } else {
       if (old_max) {
@@ -2009,7 +2018,7 @@ bool Locker::_do_cap_update(CInode *in, Capability *cap,
     }
   }
   if (change_max) {
-    if (new_max > old_max) {
+    if (enable_folder_quota && new_max > old_max) {
       // check folder quota
       CDentry *parent_dn = in->get_projected_parent_dn();
 

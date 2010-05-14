@@ -2207,6 +2207,7 @@ void Server::handle_client_openc(MDRequest *mdr)
 {
   MClientRequest *req = mdr->client_request;
   client_t client = mdr->get_client();
+  bool enable_folder_quota = g_conf.folder_quota;
 
   dout(7) << "open w/ O_CREAT on " << req->get_filepath() << dendl;
 
@@ -2249,29 +2250,31 @@ void Server::handle_client_openc(MDRequest *mdr)
     return;
   }
 
-  __u64 quota = 0;
-  __u64 rbytes = 0;
+  if (enable_folder_quota) {
+    __u64 quota = 0;
+    __u64 rbytes = 0;
   
-  // check folder quota
-  {
-    CDentry *parent_dn = dn;
+    // check folder quota
+    {
+      CDentry *parent_dn = dn;
 
-    while (parent_dn != NULL) {
-      CInode *parent_in = parent_dn->get_dir()->get_inode();
-      map<string,bufferptr> *xattrs = parent_in->get_projected_xattrs();
-      if (xattrs->find("user.quota") != xattrs->end()) {
-        quota = strtoull((*xattrs)["user.quota"].c_str(), NULL, 10);
-        rbytes = (__u64) parent_in->get_projected_inode()->rstat.rbytes;
-        break;
+      while (parent_dn != NULL) {
+        CInode *parent_in = parent_dn->get_dir()->get_inode();
+        map<string,bufferptr> *xattrs = parent_in->get_projected_xattrs();
+        if (xattrs->find("user.quota") != xattrs->end()) {
+          quota = strtoull((*xattrs)["user.quota"].c_str(), NULL, 10);
+          rbytes = (__u64) parent_in->get_projected_inode()->rstat.rbytes;
+          break;
+        }
+        parent_dn = parent_in->get_projected_parent_dn();
       }
-      parent_dn = parent_in->get_projected_parent_dn();
     }
-  }
 
-  if (quota > 0 && rbytes >= quota) {
-    dout(10) << "openc failed: out of folder quota" << dendl;
-    reply_request(mdr, -EDQUOT);
-    return;
+    if (quota > 0 && rbytes >= quota) {
+      dout(10) << "openc failed: out of folder quota" << dendl;
+      reply_request(mdr, -EDQUOT);
+      return;
+    }
   }
 
   // created null dn.
@@ -2295,8 +2298,10 @@ void Server::handle_client_openc(MDRequest *mdr)
   in->inode.version = dn->pre_dirty();
   if (cmode & CEPH_FILE_MODE_WR) {
     in->inode.client_ranges[client].first = 0;
-    //in->inode.client_ranges[client].last = in->inode.get_layout_size_increment();
-    in->inode.client_ranges[client].last = 0;
+    if (enable_folder_quota)
+      in->inode.client_ranges[client].last = 0;
+    else
+      in->inode.client_ranges[client].last = in->inode.get_layout_size_increment();
   }
   in->inode.rstat.rfiles = 1;
 
